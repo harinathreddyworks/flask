@@ -1,0 +1,49 @@
+trigger: none
+pr:
+  branches:
+    include:
+      - main
+      - develop
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  AI_FUNCTION_URL: $(AI_FUNCTION_URL)
+  AI_FUNCTION_KEY: $(AI_FUNCTION_KEY)
+
+steps:
+# 1️⃣ Checkout GitHub repo
+- checkout: self
+  persistCredentials: true
+
+# 2️⃣ Use Node.js (default image already has multiple versions)
+- task: UseNode@1
+  inputs:
+    version: '18.x'     # use default Node 18 runtime
+  displayName: 'Setup Node.js'
+
+# 3️⃣ Install dependencies and ESLint
+- script: |
+    npm install eslint --save-dev
+    npx eslint --init || true
+    npx eslint . -f json -o eslint_results.json || true
+    echo "✅ ESLint scan completed"
+  displayName: 'Run ESLint scan'
+
+# 4️⃣ Install and run secret scanner (TruffleHog)
+- script: |
+    pip install trufflehog
+    trufflehog filesystem . --json > secrets.json || true
+    echo "✅ Secret scan completed"
+  displayName: 'Run Secret scan (TruffleHog)'
+
+# 5️⃣ Combine and send scan results to Azure Function
+- script: |
+    echo "Sending results to AI Analyzer..."
+    COMBINED=$(jq -n --slurpfile e eslint_results.json --slurpfile s secrets.json '{eslint: $e, secrets: $s}')
+    curl -X POST "$(AI_FUNCTION_URL)?code=$(AI_FUNCTION_KEY)" \
+      -H "Content-Type: application/json" \
+      -d "{\"repo\": \"$(Build.Repository.Name)\", \"pr_id\": $(System.PullRequest.PullRequestId), \"results\": $COMBINED}"
+    echo "✅ Sent data to Azure Function"
+  displayName: 'Send results to AI Function (Azure OpenAI)'
